@@ -1,18 +1,23 @@
-import runpod
 import os
+import runpod
+from utils import JobInput
+from engine import vLLMEngine, OpenAIvLLMEngine
 
-# vLLM is already running on port 8000 inside the container
-# (started by your Dockerfile CMD or entrypoint)
-# We just proxy every request straight to it
+vllm_engine = vLLMEngine()
+OpenAIvLLMEngine = OpenAIvLLMEngine(vllm_engine)
 
-def handler(job):
-    # job["input"] contains everything the user sent to /v1/chat/completions, /v1/completions, etc.
-    # RunPod automatically forwards it to your container port 8000
-    # → nothing else to do
-    return job  # not used because we let RunPod proxy directly
+async def handler(job):
+    job_input = JobInput(job["input"])
+    engine = OpenAIvLLMEngine if job_input.openai_route else vllm_engine
+    results_generator = engine.generate(job_input)
+    async for batch in results_generator:
+        yield batch
 
-# This tells RunPod to simply forward all HTTP traffic to port 8000
-runpod.serverless.start({
-    "handler": handler,
-    "forward": {"port": 8000}
-})
+runpod.serverless.start(
+    {
+        "handler": handler,
+        "concurrency_modifier": lambda x: vllm_engine.max_concurrency,
+        "return_aggregate_stream": True,
+        "forward": {"port": 8000}
+    }
+)
